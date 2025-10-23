@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
@@ -8,31 +9,48 @@ from config import DB
 import psycopg2
 from datetime import datetime
 
+# ----------------------------
 # 1️⃣ Cargar dataset limpio
-df = pd.read_csv("dataset/bank-full-minado.csv")
+# ----------------------------
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # proyecto raíz
+DATA_PATH = os.path.join(BASE_DIR, "dataset", "bank-full-minado.csv")
+df = pd.read_csv(DATA_PATH)
 
+# ----------------------------
 # 2️⃣ Leer nuevos datos desde la BD (si hay)
-conn = psycopg2.connect(**DB)
-df_new = pd.read_sql("SELECT data, balance FROM new_data", conn)
-conn.close()
+# ----------------------------
+try:
+    conn = psycopg2.connect(**DB)
+    df_new = pd.read_sql("SELECT data, balance FROM new_data", conn)
+    conn.close()
 
-if not df_new.empty:
-    df_new_expanded = pd.json_normalize(df_new['data'])
-    df_new_expanded['balance'] = df_new['balance']
-    df = pd.concat([df, df_new_expanded], ignore_index=True)
+    if not df_new.empty:
+        df_new_expanded = pd.json_normalize(df_new['data'])
+        df_new_expanded['balance'] = df_new['balance']
+        df = pd.concat([df, df_new_expanded], ignore_index=True)
+except Exception as e:
+    print("❌ No se pudieron cargar datos nuevos de la BD:", e)
 
+# ----------------------------
 # 3️⃣ Separar variables
+# ----------------------------
 y = df["balance"]
 X = df.drop(columns=["balance"])
 
+# ----------------------------
 # 4️⃣ División de datos
+# ----------------------------
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
+# ----------------------------
 # 5️⃣ Entrenar modelo
+# ----------------------------
 model = LinearRegression()
 model.fit(X_train, y_train)
 
+# ----------------------------
 # 6️⃣ Evaluar
+# ----------------------------
 y_pred = model.predict(X_test)
 mse = mean_squared_error(y_test, y_pred)
 mae = mean_absolute_error(y_test, y_pred)
@@ -50,12 +68,25 @@ metrics = {
 print("✅ Modelo entrenado correctamente")
 print(json.dumps(metrics, indent=4))
 
-# 7️⃣ Guardar modelo y métricas
-joblib.dump(model, "../model/linear_model.pkl")
-with open("../model/metrics.json", "w") as f:
+# ----------------------------
+# 7️⃣ Guardar modelo y métricas en rutas absolutas
+# ----------------------------
+MODEL_DIR = os.path.join(BASE_DIR, "model")
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+model_path = os.path.join(MODEL_DIR, "linear_model.pkl")
+metrics_path = os.path.join(MODEL_DIR, "metrics.json")
+
+joblib.dump(model, model_path)
+with open(metrics_path, "w") as f:
     json.dump(metrics, f)
 
+print(f"✅ Modelo guardado en: {model_path}")
+print(f"✅ Métricas guardadas en: {metrics_path}")
+
+# ----------------------------
 # 8️⃣ Guardar métricas en la BD
+# ----------------------------
 try:
     conn = psycopg2.connect(**DB)
     cur = conn.cursor()
