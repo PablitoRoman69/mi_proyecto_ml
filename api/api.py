@@ -83,3 +83,4 @@ def add_data(data: dict):
         return {"status": "dato guardado correctamente"}
     except Exception as e:
         return {"error": f"No se pudo guardar el dato: {e}"}
+# Redeploy test para reconexión a Supabase
