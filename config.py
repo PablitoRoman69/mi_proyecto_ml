@@ -1,7 +1,9 @@
+import os
+
 DB = {
-    "dbname": "bankdb",                          # lo que está después del último /
-    "user": "postgres",                             # antes de los dos puntos
-    "password": "equipo269",             # reemplaza [YOUR_PASSWORD]
-    "host": "db.wfnueenlvnppzbjwhrgt.supabase.co",# lo que está entre @ y :
-    "port": "5432"                                 # lo que viene después de :
+    "dbname": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT")
 }
