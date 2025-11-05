@@ -1,86 +1,161 @@
-import os
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
+from pydantic import BaseModel
+from sqlalchemy import text
+from .config import DB
 import pandas as pd
 import joblib
-import json
-import psycopg2
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import os
 from datetime import datetime
-from config import DB
+import traceback
+import json
 
-app = FastAPI(title="API - Regresión Lineal Bank Marketing")
+app = FastAPI(title="API de Reentrenamiento - Regresión Logística")
 
 # ----------------------------
-# Rutas absolutas para modelo y métricas
+# Paths
 # ----------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(BASE_DIR, "model", "linear_model.pkl")
-METRICS_PATH = os.path.join(BASE_DIR, "model", "metrics.json")
-
-# Cargar modelo
-model = joblib.load(MODEL_PATH)
-
-# Cargar métricas
-with open(METRICS_PATH) as f:
-    metrics = json.load(f)
 
 # ----------------------------
-# Endpoints
+# Modelo Pydantic
 # ----------------------------
-@app.get("/")
-def root():
-    return {"status": "API funcionando correctamente"}
+class DatosEntrada(BaseModel):
+    age: int
+    job: str
+    marital: str
+    education: str
+    balance: float
+    housing: str
+    loan: str
+    y: int
 
-@app.get("/metrics")
+# ----------------------------
+# Función para reentrenar modelo
+# ----------------------------
+def retrain_model():
+    try:
+        # Leer datos de Azure SQL
+        df = pd.read_sql(text("SELECT * FROM dbo.insertar_datos"), DB.connect())
+
+        if df.empty:
+            print("⚠️ No hay datos para reentrenar.")
+            return
+
+        # Separar características y target
+        X = df.drop(columns=["y"])
+        y = df["y"]
+
+        # Evitar entrenar si solo hay una clase
+        if len(y.unique()) < 2:
+            print(f"⚠️ No se puede reentrenar: solo hay una clase en los datos ({y.unique()})")
+            return
+
+        # Convertir columnas categóricas a dummies
+        X_encoded = pd.get_dummies(X, columns=["job", "marital", "education", "housing", "loan"], drop_first=True)
+
+        # Alinear con columnas guardadas previamente
+        columns_path = os.path.join(BASE_DIR, "model", "columns.pkl")
+        if os.path.exists(columns_path):
+            saved_columns = joblib.load(columns_path)
+            for col in saved_columns:
+                if col not in X_encoded.columns:
+                    X_encoded[col] = 0
+            X_encoded = X_encoded[saved_columns]  
+        # Reordenar columnas para que coincidan
+        else:
+            # Primera vez que se entrena
+            joblib.dump(X_encoded.columns, columns_path)
+
+        # Entrenar modelo
+        model = LogisticRegression(max_iter=1000)
+        model.fit(X_encoded, y)
+
+        # Guardar modelo entrenado
+        joblib.dump(model, MODEL_PATH)
+
+        # Predecir usando columnas codificadas
+        y_pred = model.predict(X_encoded)
+
+        # Calcular métricas
+        acc = accuracy_score(y, y_pred)
+        prec = precision_score(y, y_pred)
+        rec = recall_score(y, y_pred)
+        f1 = f1_score(y, y_pred)
+
+        # Guardar métricas en la tabla dbo.metricas
+        with DB.connect() as conn:
+            conn.execute(
+                text("""
+                     INSERT INTO dbo.metricas (timestamp, modelo, accuracy, precision, recall, f1)
+                     VALUES (:timestamp, :modelo, :acc, :prec, :rec, :f1)
+                     """),
+                     {
+                         "timestamp": datetime.now(),
+                         "modelo": "Regresión Logística",
+                         "acc": acc,
+                         "prec": prec,
+                         "rec": rec,"f1": f1
+                         },
+                         )
+            print("✅ Métricas guardadas correctamente en dbo.metricas")
+
+    except Exception as e:
+        print("⚠️ Error al reentrenar el modelo:", e)
+        print(traceback.format_exc())
+# ----------------------------
+# Endpoint para insertar datos y reentrenar
+# ----------------------------
+@app.post("/insertar_datos/")
+def insertar_datos(data: DatosEntrada, background_tasks: BackgroundTasks):
+    try:
+        with DB.connect() as conn:
+            # Insertar datos
+            conn.execute(
+        text("""
+            INSERT INTO dbo.insertar_datos (age, job, marital, education, balance, housing, loan, y)
+            VALUES (:age, :job, :marital, :education, :balance, :housing, :loan, :y)
+        """),
+        data.model_dump()
+        )
+            conn.commit()  # <--- confirma la transacción
+        # Reentrenamiento en segundo plano
+        background_tasks.add_task(retrain_model)
+
+        return {"message": "✅ Datos insertados y reentrenamiento iniciado correctamente."}
+
+    except Exception as e:
+        return {"error": str(e), "trace": traceback.format_exc()}
+
+# ----------------------------
+# Endpoint para ver últimas métricas
+# ----------------------------
+@app.get("/metricas/")
 def get_metrics():
-    try:
-        # Guardar métricas en la BD
-        conn = psycopg2.connect(**DB)
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO model_metrics (timestamp, modelo, r2, mse, rmse, mae)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (
-            datetime.now(),
-            metrics["modelo"],
-            metrics["R2"],
-            metrics["MSE"],
-            metrics["RMSE"],
-            metrics["MAE"]
-        ))
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        return {"error": f"No se pudieron guardar métricas en la BD: {e}"}
+    df = pd.read_sql(text("SELECT * FROM dbo.metricas"), DB.connect())
 
-    return metrics
+    if not df.empty:
+        import json
 
-@app.post("/predict")
-def predict(data: dict):
-    try:
-        df_input = pd.DataFrame([data])
-        pred = model.predict(df_input)
-        return {"prediccion_balance": float(pred[0])}
-    except Exception as e:
-        return {"error": f"No se pudo hacer la predicción: {e}"}
+        df['timestamp'] = df['timestamp'].astype(str)
 
-@app.post("/add_data")
-def add_data(data: dict):
-    try:
-        conn = psycopg2.connect(**DB)
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO new_data (timestamp, data, balance)
-            VALUES (%s, %s, %s)
-        """, (
-            datetime.now(),
-            json.dumps(data),
-            data.get("balance")
-        ))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return {"status": "dato guardado correctamente"}
-    except Exception as e:
-        return {"error": f"No se pudo guardar el dato: {e}"}
-# Redeploy test para reconexión a Supabase
+        # Solo aplicar json.loads si no es None ni vacío
+        for col in ['matriz_confusion', 'pr_precision', 'pr_recall']:
+            df[col] = df[col].apply(lambda x: json.loads(x) if pd.notna(x) and x not in [None, ""] else None)
+
+        return df.to_dict(orient="records")
+
+    # Si está vacío, devolver lista vacía
+    return []
+
+@app.get("/")
+def home():
+    return {
+        "message": "✅ API de Reentrenamiento corriendo correctamente!",
+        "endpoints": {
+            "POST /insertar_datos/": "Inserta datos y reentrena el modelo",
+            "GET /metricas/": "Obtiene las últimas métricas del modelo"
+        }
+    }

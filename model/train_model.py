@@ -1,109 +1,80 @@
-import os
+# model/train_model.py
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import joblib
-import json
-from config import DB
-import psycopg2
 from datetime import datetime
+from sqlalchemy import text
+from api.config import DB
+import json
 
-# ----------------------------
-# 1️⃣ Cargar dataset limpio
-# ----------------------------
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # proyecto raíz
-DATA_PATH = os.path.join(BASE_DIR, "dataset", "bank-full-minado.csv")
+# -------------------------------
+# 1️⃣ CARGAR DATASET MINADO
+# -------------------------------
+DATA_PATH = "dataset/bank-full-minado.csv"
 df = pd.read_csv(DATA_PATH)
 
-# ----------------------------
-# 2️⃣ Leer nuevos datos desde la BD (si hay)
-# ----------------------------
-try:
-    conn = psycopg2.connect(**DB)
-    df_new = pd.read_sql("SELECT data, balance FROM new_data", conn)
-    conn.close()
+# Separar variables
+if "y" not in df.columns:
+    raise ValueError("❌ El dataset debe tener la columna 'y'")
 
-    if not df_new.empty:
-        df_new_expanded = pd.json_normalize(df_new['data'])
-        df_new_expanded['balance'] = df_new['balance']
-        df = pd.concat([df, df_new_expanded], ignore_index=True)
-except Exception as e:
-    print("❌ No se pudieron cargar datos nuevos de la BD:", e)
+X = df.drop(columns=["y"])
+y = df["y"]
 
-# ----------------------------
-# 3️⃣ Separar variables
-# ----------------------------
-y = df["balance"]
-X = df.drop(columns=["balance"])
-
-# ----------------------------
-# 4️⃣ División de datos
-# ----------------------------
+# -------------------------------
+# 2️⃣ DIVISIÓN DE DATOS
+# -------------------------------
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# ----------------------------
-# 5️⃣ Entrenar modelo
-# ----------------------------
-model = LinearRegression()
+# -------------------------------
+# 3️⃣ ENTRENAR MODELO
+# -------------------------------
+model = LogisticRegression(max_iter=2000)
 model.fit(X_train, y_train)
 
-# ----------------------------
-# 6️⃣ Evaluar
-# ----------------------------
+# Predicciones
 y_pred = model.predict(X_test)
-mse = mean_squared_error(y_test, y_pred)
-mae = mean_absolute_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
-rmse = mse ** 0.5
 
+# -------------------------------
+# 4️⃣ MÉTRICAS
+# -------------------------------
 metrics = {
-    "modelo": "Regresión Lineal",
-    "R2": r2,
-    "MSE": mse,
-    "RMSE": rmse,
-    "MAE": mae
+    "timestamp": datetime.now(),
+    "accuracy": accuracy_score(y_test, y_pred),
+    "precision": precision_score(y_test, y_pred),
+    "recall": recall_score(y_test, y_pred),
+    "f1": f1_score(y_test, y_pred),
+    "matriz_confusion": confusion_matrix(y_test, y_pred).tolist()  # Convertimos a lista para almacenar en DB
 }
 
-print("✅ Modelo entrenado correctamente")
-print(json.dumps(metrics, indent=4))
+print("✅ Modelo guardado correctamente")
+print("✅ Métricas calculadas:", metrics)
 
-# ----------------------------
-# 7️⃣ Guardar modelo y métricas en rutas absolutas
-# ----------------------------
-MODEL_DIR = os.path.join(BASE_DIR, "model")
-os.makedirs(MODEL_DIR, exist_ok=True)
+# -------------------------------
+# 5️⃣ GUARDAR MODELO
+# -------------------------------
+joblib.dump(model, "model/regresion_logistica.pkl")
 
-model_path = os.path.join(MODEL_DIR, "linear_model.pkl")
-metrics_path = os.path.join(MODEL_DIR, "metrics.json")
-
-joblib.dump(model, model_path)
-with open(metrics_path, "w") as f:
-    json.dump(metrics, f)
-
-print(f"✅ Modelo guardado en: {model_path}")
-print(f"✅ Métricas guardadas en: {metrics_path}")
-
-# ----------------------------
-# 8️⃣ Guardar métricas en la BD
-# ----------------------------
+# -------------------------------
+# 6️⃣ GUARDAR MÉTRICAS EN LA BASE DE DATOS (tabla dbo.metricas)
+# -------------------------------
 try:
-    conn = psycopg2.connect(**DB)
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO model_metrics (timestamp, modelo, r2, mse, rmse, mae)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (
-        datetime.now(),
-        metrics["modelo"],
-        metrics["R2"],
-        metrics["MSE"],
-        metrics["RMSE"],
-        metrics["MAE"]
-    ))
+    conn = DB.connect()
+    
+    # Convertimos la matriz de confusión a JSON
+    metrics_to_save = metrics.copy()
+    metrics_to_save["matriz_confusion"] = json.dumps(metrics["matriz_confusion"])
+    
+    query = text("""
+        INSERT INTO dbo.metricas (timestamp, accuracy, precision, recall, f1, matriz_confusion)
+        VALUES (:timestamp, :accuracy, :precision, :recall, :f1, :matriz_confusion)
+    """)
+    
+    conn.execute(query, metrics_to_save)
     conn.commit()
-    cur.close()
     conn.close()
-    print("✅ Métricas guardadas en la base de datos")
+    
+    print("✅ Métricas guardadas en dbo.metricas correctamente")
 except Exception as e:
     print("❌ Error al guardar métricas en la BD:", e)
