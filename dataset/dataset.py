@@ -1,80 +1,67 @@
+# dataset/dataset.py
+
 import pandas as pd
-import plotly.express as px
-from dash import Dash, dcc, html
-import dash_bootstrap_components as dbc
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+import joblib
+import os
+
 print("✅ Todo instalado correctamente")
 
 # ================================
 # 1. ADQUISICIÓN DE DATOS
 # ================================
-df = pd.read_csv("bank-full.csv", sep=";")  # leemos todo el dataset original
+df = pd.read_csv("dataset/bank-full.csv", sep=";")
+print("✅ Dataset original cargado")
 
 # ================================
 # 2. LIMPIEZA DE DATOS
 # ================================
-# Revisar valores nulos
 print("Valores nulos por columna:\n", df.isnull().sum())
-
-# Revisar duplicados
 print("Duplicados encontrados:", df.duplicated().sum())
-
-# Eliminamos duplicados si existieran
 df = df.drop_duplicates()
 
 # ================================
-# 3. TRANSFORMACIÓN DE DATOS
+# 3. SEPARAR TARGET
 # ================================
-# - Codificación de variables categóricas
-df_transformed = pd.get_dummies(df, drop_first=True)
+# Convertimos 'y' a 0/1
+y = df["y"].map({"yes":1, "no":0})
 
-# - Normalización de columnas numéricas (ejemplo: age y balance)
+# Variables independientes
+X = df.drop(columns=["y"])
+
+# ================================
+# 4. TRANSFORMACIÓN DE DATOS
+# ================================
+# Codificación de variables categóricas
+X_transformed = pd.get_dummies(X, drop_first=True)
+
+# Normalización de columnas numéricas
 scaler = MinMaxScaler()
-df_transformed[["age", "balance"]] = scaler.fit_transform(df[["age", "balance"]])
+X_transformed[["age", "balance"]] = scaler.fit_transform(X[["age", "balance"]])
 
-# ================================
-# 3.1 GUARDAR DATOS MINADOS
-# ================================
-df_transformed.to_csv("bank-full-minado.csv", index=False)
+# Guardar dataset minado
+df_mined = pd.concat([X_transformed, y], axis=1)
+os.makedirs("dataset", exist_ok=True)
+df_mined.to_csv("dataset/bank-full-minado.csv", index=False)
 print("✅ Archivo 'bank-full-minado.csv' generado con éxito.")
 
+# ================================
+# 5. ENTRENAMIENTO DE REGRESIÓN LOGÍSTICA
+# ================================
+X_train, X_test, y_train, y_test = train_test_split(
+    X_transformed, y, test_size=0.2, random_state=42
+)
+
+model = LogisticRegression(max_iter=1000)
+model.fit(X_train, y_train)
+print("✅ Modelo de Regresión Logística entrenado")
 
 # ================================
-# 4. VISUALIZACIÓN DE DATOS (DASHBOARD)
+# 6. GUARDAR MODELO Y COLUMNAS
 # ================================
-# Gráficas principales
-fig_age = px.histogram(df, x="age", nbins=30, title="Distribución de la Edad", marginal="box")
-
-fig_target = px.histogram(df, x="y", title="Distribución de la variable objetivo (y)")
-
-fig_scatter = px.scatter(df, x="age", y="balance", color="y",
-                         title="Relación entre Edad, Balance y Suscripción")
-
-fig_box = px.box(df, x="job", y="balance", title="Distribución de Balance por Tipo de Trabajo")
-fig_box.update_xaxes(tickangle=45)
-
-# ================================
-# DASHBOARD EN DASH
-# ================================
-app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-
-app.layout = dbc.Container([
-    html.H1("Dashboard - Bank Marketing Dataset", className="text-center my-4"),
-
-    dbc.Row([
-        dbc.Col(dcc.Graph(figure=fig_age), md=6),
-        dbc.Col(dcc.Graph(figure=fig_target), md=6)
-    ]),
-
-    dbc.Row([
-        dbc.Col(dcc.Graph(figure=fig_scatter), md=12)
-    ]),
-
-    dbc.Row([
-        dbc.Col(dcc.Graph(figure=fig_box), md=12)
-    ])
-], fluid=True)
-
-if __name__ == "__main__":
-    app.run(debug=True, port=8050)
-
+os.makedirs("model", exist_ok=True)
+joblib.dump(model, "model/regresion_logistica.pkl")
+joblib.dump(list(X_transformed.columns), "model/columns.pkl")
+print("✅ Modelo y columnas guardados en 'model/'")
