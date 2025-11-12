@@ -159,3 +159,8 @@ def home():
             "GET /metricas/": "Obtiene las últimas métricas del modelo"
         }
     }
+
+if __name__ == "__main__": # �� CAMBIO IMPORTANTE: Railway asigna el puerto dinámicamente
+    port = int(os.environ.get("PORT", 5000)) 
+    app.run(host="0.0.0.0", port=port, debug=False) #
+    debug=False
