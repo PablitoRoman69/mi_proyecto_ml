@@ -9,3 +9,6 @@ azure-storage-blob==12.18.0
 python-dotenv==1.0.0
 dash==2.22.0
 plotly==5.17.0
+pyodbc
+fastapi
+uvicorn
